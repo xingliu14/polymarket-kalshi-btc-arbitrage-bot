@@ -73,14 +73,16 @@ def get_polymarket_data(slug):
 
         # Fetch prices for each token
         prices = {}
+        token_ids = {}
         for outcome, token_id in zip(outcomes, clob_token_ids):
             price = get_clob_price(token_id)
             if price is not None:
                 prices[outcome] = price
             else:
                 prices[outcome] = 0.0
+            token_ids[outcome] = token_id
 
-        return prices, None
+        return {"prices": prices, "token_ids": token_ids}, None
     except Exception as e:
         return None, str(e)
 
@@ -101,7 +103,7 @@ def fetch_polymarket_data_struct():
         slug = polymarket_url.split("/")[-1]
 
         # Fetch data
-        poly_prices, poly_err = get_polymarket_data(slug)
+        poly_result, poly_err = get_polymarket_data(slug)
         current_price, _ = get_binance_current_price()
         price_to_beat, _ = get_binance_open_price(target_time_utc)
 
@@ -111,7 +113,8 @@ def fetch_polymarket_data_struct():
         return {
             "price_to_beat": price_to_beat,
             "current_price": current_price,
-            "prices": poly_prices,
+            "prices": poly_result["prices"],
+            "token_ids": poly_result["token_ids"],
             "slug": slug,
             "target_time_utc": target_time_utc
         }, None

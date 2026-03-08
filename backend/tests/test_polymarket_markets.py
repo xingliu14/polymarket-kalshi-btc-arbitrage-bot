@@ -67,11 +67,13 @@ class TestGetPolymarketData(unittest.TestCase):
         mock_get.return_value = mock_response
         mock_clob.side_effect = [0.55, 0.45]
 
-        prices, err = get_polymarket_data("bitcoin-slug")
+        result, err = get_polymarket_data("bitcoin-slug")
 
         self.assertIsNone(err)
-        self.assertEqual(prices["Up"], 0.55)
-        self.assertEqual(prices["Down"], 0.45)
+        self.assertEqual(result["prices"]["Up"], 0.55)
+        self.assertEqual(result["prices"]["Down"], 0.45)
+        self.assertEqual(result["token_ids"]["Up"], "token_up")
+        self.assertEqual(result["token_ids"]["Down"], "token_down")
 
     @patch("polymarket.markets.requests.get")
     def test_get_polymarket_data_not_found(self, mock_get):
@@ -102,7 +104,10 @@ class TestFetchPolymarketDataStruct(unittest.TestCase):
             "polymarket": "https://polymarket.com/event/bitcoin-slug",
             "target_time_utc": MagicMock()
         }
-        mock_poly.return_value = ({"Up": 0.55, "Down": 0.45}, None)
+        mock_poly.return_value = (
+            {"prices": {"Up": 0.55, "Down": 0.45}, "token_ids": {"Up": "tok_up", "Down": "tok_down"}},
+            None,
+        )
         mock_binance_current.return_value = (50000.0, None)
         mock_binance_open.return_value = (49500.0, None)
 
@@ -112,6 +117,7 @@ class TestFetchPolymarketDataStruct(unittest.TestCase):
         self.assertEqual(data["price_to_beat"], 49500.0)
         self.assertEqual(data["current_price"], 50000.0)
         self.assertEqual(data["prices"]["Up"], 0.55)
+        self.assertEqual(data["token_ids"]["Up"], "tok_up")
         self.assertEqual(data["slug"], "bitcoin-slug")
 
 

@@ -248,6 +248,22 @@ def cancel_order(order_id: str, dry_run: bool = False) -> dict:
         return {"success": False, "error": str(e)}
 
 
+def _query_onchain_usdc_balance(address: str) -> int | None:
+    """Query USDC balance on Polygon for a given address. Returns raw units (6 decimals) or None on failure."""
+    USDC_CONTRACT = "0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174"
+    addr = address.lower().replace("0x", "").zfill(64)
+    data = "0x70a08231" + addr
+    payload = {"jsonrpc": "2.0", "method": "eth_call", "params": [{"to": USDC_CONTRACT, "data": data}, "latest"], "id": 1}
+    try:
+        resp = requests.post("https://polygon-bor-rpc.publicnode.com", json=payload, timeout=5)
+        result = resp.json().get("result")
+        if result:
+            return int(result, 16)
+    except Exception:
+        pass
+    return None
+
+
 def get_balance() -> dict:
     """Get balance and allowance info.
 
@@ -270,9 +286,21 @@ def get_balance() -> dict:
         }
 
     try:
-        # The SDK's get_balance_allowance requires asset_type
-        # For USDC.e (collateral): asset_type = 0
-        data = client.get_balance_allowance(asset_type=0)
+        from py_clob_client.clob_types import BalanceAllowanceParams, AssetType
+        params = BalanceAllowanceParams(
+            asset_type=AssetType.COLLATERAL,
+            signature_type=POLY_SIGNATURE_TYPE,
+        )
+        data = client.get_balance_allowance(params)
+
+        # The SDK queries the EOA address, but with Gnosis Safe (signature_type=1)
+        # funds are held by the funder/proxy wallet. Query on-chain if SDK returns 0.
+        if POLY_FUNDER_ADDRESS and data.get("balance") == "0":
+            onchain = _query_onchain_usdc_balance(POLY_FUNDER_ADDRESS)
+            if onchain is not None:
+                data["balance"] = str(onchain)
+                data["source"] = "onchain_funder"
+
         return {"success": True, "data": data, "error": None}
     except Exception as e:
         return {"success": False, "data": None, "error": str(e)}

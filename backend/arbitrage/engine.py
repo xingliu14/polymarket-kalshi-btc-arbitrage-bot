@@ -25,6 +25,7 @@ def find_opportunities(poly_data: dict, kalshi_data: dict) -> tuple[list, list]:
 
     poly_strike = poly_data.get("price_to_beat")
     poly_prices = poly_data.get("prices", {})
+    poly_token_ids = poly_data.get("token_ids", {})
     poly_up_cost = poly_prices.get("Up", 0.0)
     poly_down_cost = poly_prices.get("Down", 0.0)
 
@@ -108,6 +109,7 @@ def find_opportunities(poly_data: dict, kalshi_data: dict) -> tuple[list, list]:
                 "margin": margin,
                 "is_arbitrage": total_cost < 1.00,
                 "kalshi_market": km,
+                "poly_token_id": poly_token_ids.get(check["poly_leg"]),
             }
 
             checks.append(opportunity)
