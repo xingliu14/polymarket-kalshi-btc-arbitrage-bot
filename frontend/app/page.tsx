@@ -185,17 +185,17 @@ export default function Dashboard() {
         <Card>
           <CardHeader>
             <CardTitle>Kalshi</CardTitle>
-            <CardDescription>Ticker: {data.kalshi.event_ticker}</CardDescription>
+            <CardDescription>Ticker: {data.kalshi?.event_ticker}</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
               <div className="bg-slate-100 p-3 rounded-md mb-4">
                 <div className="text-xs text-muted-foreground uppercase font-bold">Current Price</div>
-                <div className="text-xl font-mono font-semibold">${data.kalshi.current_price?.toLocaleString()}</div>
+                <div className="text-xl font-mono font-semibold">${data.kalshi?.current_price?.toLocaleString()}</div>
               </div>
 
               <div className="space-y-3 max-h-[200px] overflow-y-auto pr-2">
-                {data.kalshi.markets
+                {(data.kalshi?.markets ?? [])
                   .filter(m => Math.abs(m.strike - data.polymarket.price_to_beat) < 2500)
                   .map((m, i) => (
                     <div key={i} className="text-sm border-b pb-2 last:border-0">
