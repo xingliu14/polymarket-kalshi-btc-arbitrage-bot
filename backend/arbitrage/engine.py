@@ -98,6 +98,10 @@ def find_opportunities(poly_data: dict, kalshi_data: dict) -> tuple[list, list]:
             })
 
         for check in checks_to_perform:
+            # Skip if either leg has an invalid price (must be at least $0.04)
+            if check["poly_cost"] < 0.04 or check["kalshi_cost"] < 0.04:
+                continue
+
             total_cost = check["poly_cost"] + check["kalshi_cost"]
             margin_before_fees = 1.00 - total_cost
 
