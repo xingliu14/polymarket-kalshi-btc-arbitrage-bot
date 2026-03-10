@@ -3,6 +3,9 @@
 Detects profitable arbitrage opportunities between Polymarket and Kalshi BTC markets.
 """
 
+from kalshi.trader import calculate_kalshi_fee
+from polymarket.trader import calculate_poly_fee
+
 
 def find_opportunities(poly_data: dict, kalshi_data: dict) -> tuple[list, list]:
     """Find arbitrage opportunities between Polymarket and Kalshi.
@@ -96,7 +99,20 @@ def find_opportunities(poly_data: dict, kalshi_data: dict) -> tuple[list, list]:
 
         for check in checks_to_perform:
             total_cost = check["poly_cost"] + check["kalshi_cost"]
-            margin = 1.00 - total_cost
+            margin_before_fees = 1.00 - total_cost
+
+            # Polymarket taker fee reduces effective payout (fewer shares received)
+            poly_fee = calculate_poly_fee(
+                price=check["poly_cost"], size=1.0, category="crypto"
+            )
+
+            # Kalshi taker fee (limit orders hitting the ask are taker orders)
+            kalshi_price_cents = int(check["kalshi_cost"] * 100)
+            kalshi_fee = calculate_kalshi_fee(
+                price_cents=kalshi_price_cents, count=1
+            )
+
+            margin = margin_before_fees - poly_fee - kalshi_fee
 
             opportunity = {
                 "kalshi_strike": kalshi_strike,
@@ -106,8 +122,11 @@ def find_opportunities(poly_data: dict, kalshi_data: dict) -> tuple[list, list]:
                 "poly_cost": check["poly_cost"],
                 "kalshi_cost": check["kalshi_cost"],
                 "total_cost": total_cost,
+                "poly_fee": poly_fee,
+                "kalshi_fee": kalshi_fee,
+                "margin_before_fees": margin_before_fees,
                 "margin": margin,
-                "is_arbitrage": total_cost < 1.00,
+                "is_arbitrage": margin > 0,
                 "kalshi_market": km,
                 "poly_token_id": poly_token_ids.get(check["poly_leg"]),
             }

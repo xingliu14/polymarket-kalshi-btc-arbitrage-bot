@@ -25,6 +25,48 @@ from polymarket.auth import (
 BASE_URL = "https://clob.polymarket.com"
 CHAIN_ID = 137  # Polygon mainnet
 
+# Polymarket fee schedule per market category.
+# Formula: fee_shares = C * p * fee_rate * (p * (1 - p)) ^ exponent
+# where C = shares traded, p = price per share.
+# See https://docs.polymarket.com/trading/fees
+POLY_FEE_SCHEDULES = {
+    "crypto": {"fee_rate": 0.25, "exponent": 2, "maker_rebate": 0.20},
+    "sports": {"fee_rate": 0.0175, "exponent": 1, "maker_rebate": 0.25},
+}
+
+
+def calculate_poly_fee(
+    price: float,
+    size: float,
+    category: str = "crypto",
+    is_maker: bool = False,
+) -> float:
+    """Calculate Polymarket taker fee for a trade.
+
+    For BUY orders the fee is denominated in shares (reducing shares received).
+    For the purpose of arbitrage P&L we return the fee in USD-equivalent terms
+    (fee_shares * $1 payout), which equals the raw fee_shares value.
+
+    Args:
+        price: Share price (0 < p < 1)
+        size: Number of shares
+        category: Fee schedule key ("crypto" or "sports")
+        is_maker: If True, returns 0 (makers pay no fee)
+
+    Returns:
+        Fee amount in USD-equivalent terms (reduces profit by this amount per share)
+    """
+    if is_maker:
+        return 0.0
+
+    schedule = POLY_FEE_SCHEDULES.get(category)
+    if schedule is None:
+        return 0.0
+
+    p = price
+    fee = size * p * schedule["fee_rate"] * (p * (1 - p)) ** schedule["exponent"]
+    return max(fee, 0.0)
+
 # Try to import the official SDK
 try:
     from py_clob_client.client import ClobClient
@@ -208,6 +250,51 @@ def get_order_status(order_id: str) -> dict:
             }
     except Exception as e:
         return {"success": False, "data": None, "error": str(e)}
+
+
+def get_open_orders() -> dict:
+    """Fetch all open/live orders.
+
+    Returns:
+        dict with keys: success, orders (list), total_cost_usdc (float), error
+    """
+    path = "/data/orders"
+    try:
+        headers = get_l2_headers("GET", path)
+        resp = requests.get(
+            BASE_URL + path,
+            params={"state": "live"},
+            headers=headers,
+            timeout=10,
+        )
+
+        if resp.status_code == 200:
+            orders = resp.json()
+            if not isinstance(orders, list):
+                orders = orders.get("orders", [])
+            # Sum up cost: price * remaining size
+            total_cost_usdc = 0.0
+            for o in orders:
+                price = float(o.get("price", "0"))
+                original = float(o.get("original_size", "0"))
+                matched = float(o.get("size_matched", "0"))
+                remaining = original - matched
+                total_cost_usdc += price * remaining
+            return {
+                "success": True,
+                "orders": orders,
+                "total_cost_usdc": total_cost_usdc,
+                "error": None,
+            }
+        else:
+            return {
+                "success": False,
+                "orders": [],
+                "total_cost_usdc": 0.0,
+                "error": f"HTTP {resp.status_code}: {resp.text[:200]}",
+            }
+    except Exception as e:
+        return {"success": False, "orders": [], "total_cost_usdc": 0.0, "error": str(e)}
 
 
 def cancel_order(order_id: str, dry_run: bool = False) -> dict:

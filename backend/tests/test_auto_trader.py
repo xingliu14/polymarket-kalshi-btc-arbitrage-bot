@@ -16,6 +16,9 @@ from auto_trader import (
     execute_trade,
     check_balances,
     _has_sufficient_funds,
+    _check_exposure_cap,
+    get_current_exposure,
+    compute_pnl,
     _log_trade,
     run_arbitrage_check,
 )
@@ -343,13 +346,14 @@ class TestRunArbitrageCheck(unittest.TestCase):
         self.assertEqual(len(result["executed_trades"]), 0)
         self.assertEqual(len(result["opportunities"]), 0)
 
+    @patch("auto_trader._check_exposure_cap")
     @patch("auto_trader.execute_trade")
     @patch("auto_trader.check_balances")
     @patch("auto_trader.find_opportunities")
     @patch("auto_trader.fetch_kalshi_data_struct")
     @patch("auto_trader.fetch_polymarket_data_struct")
     def test_executes_qualifying_trades(
-        self, mock_poly, mock_kalshi, mock_find, mock_bal, mock_exec
+        self, mock_poly, mock_kalshi, mock_find, mock_bal, mock_exec, mock_cap
     ):
         """Trades are executed when margin meets threshold."""
         mock_poly.return_value = (
@@ -367,6 +371,7 @@ class TestRunArbitrageCheck(unittest.TestCase):
             "poly_balance_usdc": 100.0,
             "errors": [],
         }
+        mock_cap.return_value = (True, "", {"kalshi_usd": 0, "poly_usd": 0, "total_usd": 0})
         mock_exec.return_value = {"status": "dry_run"}
 
         result = run_arbitrage_check()
@@ -388,6 +393,294 @@ class TestRunArbitrageCheck(unittest.TestCase):
         self.assertEqual(len(result["errors"]), 2)
         self.assertEqual(len(result["executed_trades"]), 0)
         mock_find.assert_not_called()
+
+
+class TestExposureCap(unittest.TestCase):
+    """Test $5 exposure cap logic."""
+
+    @patch("auto_trader.poly_get_open_orders")
+    @patch("auto_trader.kalshi_get_open_orders")
+    def test_get_current_exposure(self, mock_kalshi_orders, mock_poly_orders):
+        """Computes total exposure from open orders on both platforms."""
+        mock_kalshi_orders.return_value = {
+            "success": True,
+            "orders": [],
+            "total_cost_cents": 200,  # $2.00
+            "error": None,
+        }
+        mock_poly_orders.return_value = {
+            "success": True,
+            "orders": [],
+            "total_cost_usdc": 1.50,
+            "error": None,
+        }
+
+        exposure = get_current_exposure()
+        self.assertAlmostEqual(exposure["kalshi_usd"], 2.00)
+        self.assertAlmostEqual(exposure["poly_usd"], 1.50)
+        self.assertAlmostEqual(exposure["total_usd"], 3.50)
+        self.assertEqual(len(exposure["errors"]), 0)
+
+    @patch("auto_trader.poly_get_open_orders")
+    @patch("auto_trader.kalshi_get_open_orders")
+    def test_exposure_cap_allows_trade(self, mock_kalshi_orders, mock_poly_orders):
+        """Trade allowed when exposure + new trade < cap."""
+        mock_kalshi_orders.return_value = {
+            "success": True,
+            "orders": [],
+            "total_cost_cents": 100,  # $1.00 existing
+            "error": None,
+        }
+        mock_poly_orders.return_value = {
+            "success": True,
+            "orders": [],
+            "total_cost_usdc": 1.00,
+            "error": None,
+        }
+
+        # New trade costs ~$0.95 (0.45 poly + 0.50 kalshi)
+        opp = _make_opportunity(poly_cost=0.45, kalshi_cost=0.50)
+        ok, reason, exposure = _check_exposure_cap(opp)
+
+        # Existing $2.00 + new $0.95 = $2.95 < $5.00 cap
+        self.assertTrue(ok)
+        self.assertEqual(reason, "")
+
+    @patch("auto_trader.poly_get_open_orders")
+    @patch("auto_trader.kalshi_get_open_orders")
+    def test_exposure_cap_blocks_trade(self, mock_kalshi_orders, mock_poly_orders):
+        """Trade blocked when exposure + new trade > cap."""
+        mock_kalshi_orders.return_value = {
+            "success": True,
+            "orders": [],
+            "total_cost_cents": 250,  # $2.50 existing
+            "error": None,
+        }
+        mock_poly_orders.return_value = {
+            "success": True,
+            "orders": [],
+            "total_cost_usdc": 2.00,  # $2.00 existing
+            "error": None,
+        }
+
+        # Existing $4.50 + new ~$0.95 = $5.45 > $5.00 cap
+        opp = _make_opportunity(poly_cost=0.45, kalshi_cost=0.50)
+        ok, reason, exposure = _check_exposure_cap(opp)
+
+        self.assertFalse(ok)
+        self.assertIn("cap", reason)
+
+    @patch("auto_trader.poly_get_open_orders")
+    @patch("auto_trader.kalshi_get_open_orders")
+    def test_exposure_cap_handles_api_errors(self, mock_kalshi_orders, mock_poly_orders):
+        """Exposure check still works if one API fails (uses 0 for that side)."""
+        mock_kalshi_orders.return_value = {
+            "success": False,
+            "orders": [],
+            "total_cost_cents": 0,
+            "error": "Auth failed",
+        }
+        mock_poly_orders.return_value = {
+            "success": True,
+            "orders": [],
+            "total_cost_usdc": 1.00,
+            "error": None,
+        }
+
+        opp = _make_opportunity(poly_cost=0.45, kalshi_cost=0.50)
+        ok, reason, exposure = _check_exposure_cap(opp)
+
+        # $0 (failed) + $1.00 + $0.95 new = $1.95 < $5.00
+        self.assertTrue(ok)
+        self.assertEqual(len(exposure["errors"]), 1)
+
+    @patch("auto_trader._check_exposure_cap")
+    @patch("auto_trader.execute_trade")
+    @patch("auto_trader.check_balances")
+    @patch("auto_trader.find_opportunities")
+    @patch("auto_trader.fetch_kalshi_data_struct")
+    @patch("auto_trader.fetch_polymarket_data_struct")
+    def test_run_skips_trade_when_capped(
+        self, mock_poly, mock_kalshi, mock_find, mock_bal, mock_exec, mock_cap
+    ):
+        """run_arbitrage_check skips trades when exposure cap is hit."""
+        mock_poly.return_value = (
+            {"prices": {"Up": 0.4, "Down": 0.3}, "token_ids": {"Up": "t1", "Down": "t2"}},
+            None,
+        )
+        mock_kalshi.return_value = ({"markets": []}, None)
+        mock_find.return_value = ([_make_opportunity(margin=0.05)], [])
+        mock_bal.return_value = {
+            "kalshi_balance_cents": 10000,
+            "poly_balance_usdc": 100.0,
+            "errors": [],
+        }
+        mock_cap.return_value = (
+            False,
+            "Exposure $4.50 + new $0.95 = $5.45 > cap $5.00",
+            {"kalshi_usd": 2.50, "poly_usd": 2.00, "total_usd": 4.50},
+        )
+
+        result = run_arbitrage_check()
+
+        mock_exec.assert_not_called()
+        self.assertEqual(len(result["executed_trades"]), 0)
+        self.assertTrue(any("Exposure cap" in e for e in result["errors"]))
+
+
+class TestPnLTracking(unittest.TestCase):
+    """Test P&L computation from trade history."""
+
+    def _write_history(self, trades):
+        """Helper: write trades to a temp file and patch TRADE_LOG_FILE."""
+        f = tempfile.NamedTemporaryFile(
+            suffix=".json", mode="w", delete=False
+        )
+        json.dump(trades, f)
+        f.close()
+        return f.name
+
+    def test_pnl_no_file(self):
+        """No trade history file → zero P&L."""
+        import auto_trader
+        original = auto_trader.TRADE_LOG_FILE
+        auto_trader.TRADE_LOG_FILE = "/tmp/nonexistent_pnl_test.json"
+        try:
+            pnl = compute_pnl()
+            self.assertEqual(pnl["total_pnl"], 0.0)
+            self.assertEqual(pnl["num_trades"], 0)
+        finally:
+            auto_trader.TRADE_LOG_FILE = original
+
+    def test_pnl_filled_trades_profit(self):
+        """Filled trades compute positive P&L from margin."""
+        trades = [
+            {
+                "status": "filled",
+                "opportunity": {
+                    "margin": 0.05,
+                    "poly_cost": 0.45,
+                    "kalshi_cost": 0.50,
+                },
+            },
+            {
+                "status": "filled",
+                "opportunity": {
+                    "margin": 0.03,
+                    "poly_cost": 0.47,
+                    "kalshi_cost": 0.50,
+                },
+            },
+        ]
+        tmpfile = self._write_history(trades)
+        import auto_trader
+        original = auto_trader.TRADE_LOG_FILE
+        auto_trader.TRADE_LOG_FILE = tmpfile
+        try:
+            pnl = compute_pnl()
+            # margin 0.05 + 0.03 = 0.08 (with CONTRACTS_PER_TRADE=1)
+            self.assertAlmostEqual(pnl["total_pnl"], 0.08)
+            self.assertEqual(pnl["wins"], 2)
+            self.assertEqual(pnl["losses"], 0)
+            self.assertEqual(pnl["num_trades"], 2)
+        finally:
+            auto_trader.TRADE_LOG_FILE = original
+            os.unlink(tmpfile)
+
+    def test_pnl_partial_fill_loss(self):
+        """Partial fills compute negative P&L."""
+        trades = [
+            {
+                "status": "partial_kalshi_only",
+                "opportunity": {
+                    "margin": 0.05,
+                    "poly_cost": 0.45,
+                    "kalshi_cost": 0.50,
+                },
+            },
+        ]
+        tmpfile = self._write_history(trades)
+        import auto_trader
+        original = auto_trader.TRADE_LOG_FILE
+        auto_trader.TRADE_LOG_FILE = tmpfile
+        try:
+            pnl = compute_pnl()
+            # Loss = kalshi_cost * contracts = -0.50
+            self.assertAlmostEqual(pnl["total_pnl"], -0.50)
+            self.assertEqual(pnl["wins"], 0)
+            self.assertEqual(pnl["losses"], 1)
+        finally:
+            auto_trader.TRADE_LOG_FILE = original
+            os.unlink(tmpfile)
+
+    def test_pnl_partial_poly_loss(self):
+        """Partial Poly fill computes negative P&L."""
+        trades = [
+            {
+                "status": "partial_poly_only",
+                "opportunity": {
+                    "margin": 0.05,
+                    "poly_cost": 0.45,
+                    "kalshi_cost": 0.50,
+                },
+            },
+        ]
+        tmpfile = self._write_history(trades)
+        import auto_trader
+        original = auto_trader.TRADE_LOG_FILE
+        auto_trader.TRADE_LOG_FILE = tmpfile
+        try:
+            pnl = compute_pnl()
+            # Loss = poly_cost * size = -0.45
+            self.assertAlmostEqual(pnl["total_pnl"], -0.45)
+            self.assertEqual(pnl["losses"], 1)
+        finally:
+            auto_trader.TRADE_LOG_FILE = original
+            os.unlink(tmpfile)
+
+    def test_pnl_mixed_net_negative(self):
+        """One win + one partial loss = net negative stops bot."""
+        trades = [
+            {
+                "status": "filled",
+                "opportunity": {"margin": 0.05, "poly_cost": 0.45, "kalshi_cost": 0.50},
+            },
+            {
+                "status": "partial_kalshi_only",
+                "opportunity": {"margin": 0.04, "poly_cost": 0.46, "kalshi_cost": 0.50},
+            },
+        ]
+        tmpfile = self._write_history(trades)
+        import auto_trader
+        original = auto_trader.TRADE_LOG_FILE
+        auto_trader.TRADE_LOG_FILE = tmpfile
+        try:
+            pnl = compute_pnl()
+            # +0.05 - 0.50 = -0.45
+            self.assertAlmostEqual(pnl["total_pnl"], -0.45)
+            self.assertTrue(pnl["total_pnl"] < 0)  # Would trigger stop
+        finally:
+            auto_trader.TRADE_LOG_FILE = original
+            os.unlink(tmpfile)
+
+    def test_pnl_ignores_non_trade_statuses(self):
+        """Failed/rejected/unfilled trades have zero P&L."""
+        trades = [
+            {"status": "failed_kalshi", "opportunity": {"margin": 0.05, "poly_cost": 0.45, "kalshi_cost": 0.50}},
+            {"status": "rejected_slippage", "opportunity": {"margin": 0.05, "poly_cost": 0.45, "kalshi_cost": 0.50}},
+            {"status": "unfilled_both", "opportunity": {"margin": 0.05, "poly_cost": 0.45, "kalshi_cost": 0.50}},
+        ]
+        tmpfile = self._write_history(trades)
+        import auto_trader
+        original = auto_trader.TRADE_LOG_FILE
+        auto_trader.TRADE_LOG_FILE = tmpfile
+        try:
+            pnl = compute_pnl()
+            self.assertEqual(pnl["total_pnl"], 0.0)
+            self.assertEqual(pnl["num_trades"], 0)
+        finally:
+            auto_trader.TRADE_LOG_FILE = original
+            os.unlink(tmpfile)
 
 
 if __name__ == "__main__":

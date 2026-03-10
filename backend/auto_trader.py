@@ -28,14 +28,20 @@ from kalshi.trader import (
     get_balance as kalshi_get_balance,
     get_order_status as kalshi_get_order_status,
     cancel_order as kalshi_cancel_order,
+    get_open_orders as kalshi_get_open_orders,
 )
 from polymarket.trader import (
     place_order as poly_place_order,
     get_balance as poly_get_balance,
     get_order_status as poly_get_order_status,
     cancel_order as poly_cancel_order,
+    get_open_orders as poly_get_open_orders,
 )
 from arbitrage.engine import find_opportunities
+from notifications.email_notify import (
+    notify_losing_trade,
+    DailySummaryScheduler,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -49,6 +55,7 @@ DRY_RUN = os.getenv("DRY_RUN", "True").lower() in ("true", "1", "yes")
 TRADE_LOG_FILE = os.getenv("TRADE_LOG_FILE", "trade_history.json")
 FILL_CHECK_ATTEMPTS = int(os.getenv("FILL_CHECK_ATTEMPTS", "3"))
 FILL_CHECK_DELAY = float(os.getenv("FILL_CHECK_DELAY", "2"))
+MAX_EXPOSURE_USD = float(os.getenv("MAX_EXPOSURE_USD", "5.00"))
 
 print("Auto Trader Config:")
 print(f"  MIN_MARGIN:       {MIN_MARGIN}")
@@ -57,6 +64,7 @@ print(f"  CONTRACTS:        {CONTRACTS_PER_TRADE} (Kalshi) / {POLY_SIZE_PER_TRAD
 print(f"  POLL_INTERVAL:    {POLL_INTERVAL}s")
 print(f"  DRY_RUN:          {DRY_RUN}")
 print(f"  FILL_CHECKS:      {FILL_CHECK_ATTEMPTS}x @ {FILL_CHECK_DELAY}s")
+print(f"  MAX_EXPOSURE:     ${MAX_EXPOSURE_USD:.2f}")
 print()
 
 
@@ -76,6 +84,75 @@ def _log_trade(record: dict):
             json.dump(history, f, indent=2, default=str)
     except Exception as e:
         print(f"[WARN] Failed to write trade log: {e}")
+
+
+# ---------------------------------------------------------------------------
+# P&L tracking
+# ---------------------------------------------------------------------------
+def compute_pnl() -> dict:
+    """Compute cumulative P&L from the trade history log.
+
+    Trade outcomes:
+    - "filled" / "dry_run": both legs filled → profit = margin per contract
+    - "partial_kalshi_only": only Kalshi filled → loss = kalshi cost
+    - "partial_poly_only": only Poly filled → loss = poly cost
+    - All other statuses: no money at risk (failed/cancelled before fill)
+
+    Returns:
+        dict with total_pnl, num_trades, wins, losses, details
+    """
+    result = {
+        "total_pnl": 0.0,
+        "num_trades": 0,
+        "wins": 0,
+        "losses": 0,
+        "details": [],
+    }
+
+    if not os.path.exists(TRADE_LOG_FILE):
+        return result
+
+    try:
+        with open(TRADE_LOG_FILE, "r") as f:
+            history = json.load(f)
+    except Exception:
+        return result
+
+    for trade in history:
+        status = trade.get("status", "")
+        opp = trade.get("opportunity", {})
+        margin = opp.get("margin", 0)
+        poly_cost = opp.get("poly_cost", 0)
+        kalshi_cost = opp.get("kalshi_cost", 0)
+
+        pnl = 0.0
+
+        if status in ("filled", "dry_run"):
+            # Both legs filled — guaranteed profit
+            pnl = margin * CONTRACTS_PER_TRADE
+            result["wins"] += 1
+            result["num_trades"] += 1
+        elif status == "partial_kalshi_only":
+            # Kalshi filled, Poly didn't — we're exposed on Kalshi side
+            pnl = -(kalshi_cost * CONTRACTS_PER_TRADE)
+            result["losses"] += 1
+            result["num_trades"] += 1
+        elif status == "partial_poly_only":
+            # Poly filled, Kalshi didn't — we're exposed on Poly side
+            pnl = -(poly_cost * POLY_SIZE_PER_TRADE)
+            result["losses"] += 1
+            result["num_trades"] += 1
+        # All other statuses (failed, rejected, unfilled_both) have no P&L
+
+        if pnl != 0:
+            result["total_pnl"] += pnl
+            result["details"].append({
+                "timestamp": trade.get("timestamp"),
+                "status": status,
+                "pnl": pnl,
+            })
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +219,61 @@ def _has_sufficient_funds(balances: dict, opp: dict) -> tuple[bool, str]:
             )
 
     return True, ""
+
+
+# ---------------------------------------------------------------------------
+# Exposure cap check
+# ---------------------------------------------------------------------------
+def get_current_exposure() -> dict:
+    """Query open orders on both platforms and compute total exposure in USD.
+
+    Returns:
+        dict with kalshi_usd, poly_usd, total_usd, errors
+    """
+    result = {"kalshi_usd": 0.0, "poly_usd": 0.0, "total_usd": 0.0, "errors": []}
+
+    ko = kalshi_get_open_orders()
+    if ko["success"]:
+        result["kalshi_usd"] = ko["total_cost_cents"] / 100.0
+    else:
+        result["errors"].append(f"Kalshi open orders: {ko['error']}")
+
+    po = poly_get_open_orders()
+    if po["success"]:
+        result["poly_usd"] = po["total_cost_usdc"]
+    else:
+        result["errors"].append(f"Poly open orders: {po['error']}")
+
+    result["total_usd"] = result["kalshi_usd"] + result["poly_usd"]
+    return result
+
+
+def _check_exposure_cap(opp: dict) -> tuple[bool, str, dict]:
+    """Check if placing this trade would exceed MAX_EXPOSURE_USD.
+
+    Args:
+        opp: Opportunity dict from engine
+
+    Returns:
+        (ok, reason, exposure_info)
+    """
+    exposure = get_current_exposure()
+    if exposure["errors"]:
+        for err in exposure["errors"]:
+            print(f"  [EXPOSURE WARN] {err}")
+
+    new_kalshi_cost = opp["kalshi_cost"] * CONTRACTS_PER_TRADE
+    new_poly_cost = opp["poly_cost"] * POLY_SIZE_PER_TRADE
+    new_trade_cost = new_kalshi_cost + new_poly_cost
+    projected = exposure["total_usd"] + new_trade_cost
+
+    if projected > MAX_EXPOSURE_USD:
+        return False, (
+            f"Exposure ${exposure['total_usd']:.2f} + new ${new_trade_cost:.2f} "
+            f"= ${projected:.2f} > cap ${MAX_EXPOSURE_USD:.2f}"
+        ), exposure
+
+    return True, "", exposure
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +361,9 @@ def execute_trade(opportunity: dict) -> dict:
             "poly_cost": opportunity["poly_cost"],
             "kalshi_cost": opportunity["kalshi_cost"],
             "total_cost": opportunity["total_cost"],
+            "poly_fee": opportunity.get("poly_fee", 0.0),
+            "kalshi_fee": opportunity.get("kalshi_fee", 0.0),
+            "margin_before_fees": opportunity.get("margin_before_fees", opportunity["margin"]),
             "margin": opportunity["margin"],
         },
         "kalshi_order": None,
@@ -416,8 +551,24 @@ def run_arbitrage_check():
             result["errors"].append(f"Insufficient funds: {reason}")
             continue
 
+        # Exposure cap check
+        ok, reason, exposure = _check_exposure_cap(opp)
+        if not ok:
+            print(f"  [SKIP] Exposure cap: {reason}")
+            result["errors"].append(f"Exposure cap: {reason}")
+            continue
+        print(
+            f"  Exposure: Kalshi=${exposure['kalshi_usd']:.2f} "
+            f"Poly=${exposure['poly_usd']:.2f} "
+            f"Total=${exposure['total_usd']:.2f}"
+        )
+
         execution = execute_trade(opp)
         result["executed_trades"].append(execution)
+
+        # Send email alert on losing trades
+        if execution["status"] in ("partial_kalshi_only", "partial_poly_only"):
+            notify_losing_trade(execution)
 
     return result
 
@@ -426,6 +577,12 @@ def main():
     """Main trading loop."""
     print(f"Starting dual-leg arbitrage bot at {datetime.datetime.now(datetime.timezone.utc)}")
     print()
+
+    # Start daily summary email scheduler (runs in background thread)
+    summary_scheduler = DailySummaryScheduler(
+        TRADE_LOG_FILE, CONTRACTS_PER_TRADE, POLY_SIZE_PER_TRADE
+    )
+    summary_scheduler.start()
 
     cycle_count = 0
     try:
@@ -453,11 +610,15 @@ def main():
                 )
                 for opp in result["opportunities"]:
                     flag = " ***" if opp["margin"] >= MIN_MARGIN else ""
+                    poly_fee = opp.get("poly_fee", 0)
+                    kalshi_fee = opp.get("kalshi_fee", 0)
+                    total_fees = poly_fee + kalshi_fee
+                    fee_str = f", fees={total_fees:.4f}" if total_fees else ""
                     print(
                         f"  {opp['type']}: "
                         f"strike=${opp['kalshi_strike']:,.0f}, "
                         f"margin={opp['margin']:.4f} "
-                        f"(cost ${opp['total_cost']:.4f}){flag}"
+                        f"(cost ${opp['total_cost']:.4f}{fee_str}){flag}"
                     )
             else:
                 print("No arbitrage opportunities found")
@@ -478,6 +639,20 @@ def main():
                         print(f" Poly={oid}", end="")
                     print()
 
+            # --- Stop-on-loss check ---
+            pnl = compute_pnl()
+            if pnl["num_trades"] > 0:
+                print(
+                    f"  P&L: ${pnl['total_pnl']:.4f} "
+                    f"({pnl['wins']}W / {pnl['losses']}L)"
+                )
+                if pnl["total_pnl"] < 0:
+                    print(
+                        f"\n[STOP] Net loss detected: ${pnl['total_pnl']:.4f}. "
+                        f"Halting bot to prevent further losses."
+                    )
+                    break
+
             print()
             time.sleep(POLL_INTERVAL)
 
@@ -487,6 +662,8 @@ def main():
         print(f"\nFatal error: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        summary_scheduler.stop()
 
 
 if __name__ == "__main__":

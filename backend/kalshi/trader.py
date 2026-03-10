@@ -9,6 +9,34 @@ ORDERS_PATH = "/trade-api/v2/portfolio/orders"
 BALANCE_PATH = "/trade-api/v2/portfolio/balance"
 
 
+def calculate_kalshi_fee(
+    price_cents: int,
+    count: int,
+    is_maker: bool = False,
+) -> float:
+    """Calculate Kalshi trading fee per the fee schedule (effective Feb 5, 2026).
+
+    Taker: fees = round_up(0.07 × C × P × (1-P))
+    Maker: fees = round_up(0.0175 × C × P × (1-P))
+
+    Args:
+        price_cents: Contract price in cents (1-99)
+        count: Number of contracts
+        is_maker: If True, use the lower maker fee rate
+
+    Returns:
+        Fee in dollars
+    """
+    # Use integer arithmetic to avoid floating point rounding errors.
+    # rate_bps: taker=700, maker=175 (basis points * 100)
+    rate_bps = 175 if is_maker else 700
+    # raw_fee_cents * 1_000_000 = rate_bps * count * price_cents * (100 - price_cents)
+    numerator = rate_bps * count * price_cents * (100 - price_cents)
+    # Ceiling division to get fee in cents (rounded up)
+    fee_cents = -(-numerator // 1_000_000)
+    return fee_cents / 100.0
+
+
 def place_order(
     ticker: str,
     side: str,
@@ -131,6 +159,47 @@ def get_order_status(order_id: str) -> dict:
             }
     except Exception as e:
         return {"success": False, "data": None, "error": str(e)}
+
+
+def get_open_orders() -> dict:
+    """Fetch all open/resting orders.
+
+    Returns:
+        dict with keys: success, orders (list), total_cost_cents (int), error
+    """
+    try:
+        headers = get_auth_headers("GET", ORDERS_PATH)
+        resp = requests.get(
+            BASE_URL + ORDERS_PATH,
+            params={"status": "resting"},
+            headers=headers,
+            timeout=10,
+        )
+
+        if resp.status_code == 200:
+            data = resp.json()
+            orders = data.get("orders", [])
+            # Sum up cost of all open orders: price * remaining_count
+            total_cost_cents = 0
+            for o in orders:
+                price = o.get("yes_price", 0)
+                remaining = o.get("remaining_count", 0)
+                total_cost_cents += price * remaining
+            return {
+                "success": True,
+                "orders": orders,
+                "total_cost_cents": total_cost_cents,
+                "error": None,
+            }
+        else:
+            return {
+                "success": False,
+                "orders": [],
+                "total_cost_cents": 0,
+                "error": f"HTTP {resp.status_code}: {resp.text[:200]}",
+            }
+    except Exception as e:
+        return {"success": False, "orders": [], "total_cost_cents": 0, "error": str(e)}
 
 
 def cancel_order(order_id: str, dry_run: bool = False) -> dict:

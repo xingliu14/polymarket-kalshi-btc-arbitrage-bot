@@ -2,6 +2,9 @@
 .env
 *.pem
 
+# Runtime data
+trade_history.json
+
 # Python
 __pycache__/
 *.pyc
