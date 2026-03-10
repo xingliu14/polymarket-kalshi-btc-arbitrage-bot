@@ -50,7 +50,7 @@ export default function Dashboard() {
 
   const fetchData = async () => {
     try {
-      const res = await fetch("http://localhost:8000/arbitrage")
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/arbitrage`)
       const json = await res.json()
       setData(json)
       setLastUpdated(new Date())
