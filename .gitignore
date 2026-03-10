@@ -4,6 +4,7 @@
 
 # Runtime data
 trade_history.json
+api_response.json
 
 # Python
 __pycache__/
