@@ -57,19 +57,41 @@ def get_arbitrage_data():
 @app.get("/positions")
 def get_positions():
     """Fetch open orders and balances from both platforms."""
-    kalshi_orders_result = kalshi_get_open_orders()
-    poly_orders_result = poly_get_open_orders()
-    kalshi_balance_result = kalshi_get_balance()
-    poly_balance_result = poly_get_balance()
-
+    kalshi_orders_result = {"orders": [], "total_cost_cents": 0, "error": None}
+    poly_orders_result = {"orders": [], "total_cost_usdc": 0.0, "error": None}
     kalshi_balance_cents = None
-    if kalshi_balance_result["success"]:
-        kalshi_balance_cents = kalshi_balance_result["data"].get("balance", 0)
-
     poly_balance_usdc = None
-    if poly_balance_result["success"]:
-        raw = poly_balance_result["data"].get("balance", "0")
-        poly_balance_usdc = int(raw) / 1_000_000
+    kalshi_balance_error = None
+    poly_balance_error = None
+
+    try:
+        kalshi_orders_result = kalshi_get_open_orders()
+    except Exception as e:
+        kalshi_orders_result["error"] = str(e)
+
+    try:
+        poly_orders_result = poly_get_open_orders()
+    except Exception as e:
+        poly_orders_result["error"] = str(e)
+
+    try:
+        kb = kalshi_get_balance()
+        if kb["success"]:
+            kalshi_balance_cents = kb["data"].get("balance", 0)
+        else:
+            kalshi_balance_error = kb.get("error")
+    except Exception as e:
+        kalshi_balance_error = str(e)
+
+    try:
+        pb = poly_get_balance()
+        if pb["success"]:
+            raw = pb["data"].get("balance", "0")
+            poly_balance_usdc = int(raw) / 1_000_000
+        else:
+            poly_balance_error = pb.get("error")
+    except Exception as e:
+        poly_balance_error = str(e)
 
     return {
         "timestamp": datetime.datetime.now().isoformat(),
@@ -77,12 +99,14 @@ def get_positions():
             "orders": kalshi_orders_result.get("orders", []),
             "total_cost_usd": kalshi_orders_result.get("total_cost_cents", 0) / 100,
             "balance_usd": kalshi_balance_cents / 100 if kalshi_balance_cents is not None else None,
+            "balance_error": kalshi_balance_error,
             "error": kalshi_orders_result.get("error"),
         },
         "polymarket": {
             "orders": poly_orders_result.get("orders", []),
             "total_cost_usd": poly_orders_result.get("total_cost_usdc", 0.0),
             "balance_usd": poly_balance_usdc,
+            "balance_error": poly_balance_error,
             "error": poly_orders_result.get("error"),
         },
     }

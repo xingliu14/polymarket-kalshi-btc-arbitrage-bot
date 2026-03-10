@@ -34,12 +34,14 @@ interface Positions {
     orders: KalshiOrder[]
     total_cost_usd: number
     balance_usd: number | null
+    balance_error: string | null
     error: string | null
   }
   polymarket: {
     orders: PolyOrder[]
     total_cost_usd: number
     balance_usd: number | null
+    balance_error: string | null
     error: string | null
   }
 }
@@ -113,11 +115,12 @@ export default function Dashboard() {
   useEffect(() => {
     fetchData()
     fetchPositions()
-    const interval = setInterval(() => {
-      fetchData()
-      fetchPositions()
-    }, 5000)
-    return () => clearInterval(interval)
+    const priceInterval = setInterval(fetchData, 1000)
+    const positionsInterval = setInterval(fetchPositions, 10000)
+    return () => {
+      clearInterval(priceInterval)
+      clearInterval(positionsInterval)
+    }
   }, [])
 
   if (loading) return <div className="flex items-center justify-center h-screen">Loading...</div>
@@ -139,8 +142,42 @@ export default function Dashboard() {
           </Badge>
         </div>
         <div className="text-sm text-muted-foreground">
-          Last updated: {lastUpdated.toLocaleTimeString()}
-        </div>
+            Last updated: {lastUpdated.toLocaleTimeString()}
+          </div>
+      </div>
+
+      {/* Cash Balances */}
+      <div className="grid grid-cols-3 gap-4">
+        <Card>
+          <CardContent className="pt-6">
+            <div className="text-xs text-muted-foreground uppercase font-semibold tracking-wide mb-1">Kalshi Balance</div>
+            {positions ? (
+              positions.kalshi.balance_usd !== null
+                ? <div className="text-3xl font-mono font-bold text-slate-800">${positions.kalshi.balance_usd.toFixed(2)}</div>
+                : <div className="text-sm text-red-500">{positions.kalshi.balance_error || "Unavailable"}</div>
+            ) : <div className="text-2xl font-mono text-slate-400">Loading...</div>}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="text-xs text-muted-foreground uppercase font-semibold tracking-wide mb-1">Polymarket Balance</div>
+            {positions ? (
+              positions.polymarket.balance_usd !== null
+                ? <div className="text-3xl font-mono font-bold text-slate-800">${positions.polymarket.balance_usd.toFixed(2)}</div>
+                : <div className="text-sm text-red-500">{positions.polymarket.balance_error || "Unavailable"}</div>
+            ) : <div className="text-2xl font-mono text-slate-400">Loading...</div>}
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <div className="text-xs text-muted-foreground uppercase font-semibold tracking-wide mb-1">Total Balance</div>
+            {positions ? (
+              positions.kalshi.balance_usd !== null && positions.polymarket.balance_usd !== null
+                ? <div className="text-3xl font-mono font-bold text-green-700">${(positions.kalshi.balance_usd + positions.polymarket.balance_usd).toFixed(2)}</div>
+                : <div className="text-2xl font-mono text-slate-400">—</div>
+            ) : <div className="text-2xl font-mono text-slate-400">Loading...</div>}
+          </CardContent>
+        </Card>
       </div>
 
       {data.errors.length > 0 && (
@@ -278,19 +315,9 @@ export default function Dashboard() {
       {positions && (
         <Card>
           <CardHeader>
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Wallet className="h-5 w-5 text-slate-600" />
-                <CardTitle>Open Positions</CardTitle>
-              </div>
-              <div className="flex gap-4 text-sm text-muted-foreground">
-                {positions.kalshi.balance_usd !== null && (
-                  <span>Kalshi balance: <span className="font-mono font-medium text-slate-700">${positions.kalshi.balance_usd.toFixed(2)}</span></span>
-                )}
-                {positions.polymarket.balance_usd !== null && (
-                  <span>Poly balance: <span className="font-mono font-medium text-slate-700">${positions.polymarket.balance_usd.toFixed(2)}</span></span>
-                )}
-              </div>
+            <div className="flex items-center gap-2">
+              <Wallet className="h-5 w-5 text-slate-600" />
+              <CardTitle>Open Positions</CardTitle>
             </div>
             <CardDescription>Live open orders on both platforms</CardDescription>
           </CardHeader>
