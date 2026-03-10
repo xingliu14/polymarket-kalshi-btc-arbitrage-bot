@@ -5,7 +5,44 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
-import { AlertCircle, TrendingUp } from "lucide-react"
+import { AlertCircle, TrendingUp, Wallet } from "lucide-react"
+
+interface KalshiOrder {
+  order_id: string
+  ticker: string
+  side: string
+  yes_price: number
+  no_price: number
+  count: number
+  remaining_count: number
+  status: string
+}
+
+interface PolyOrder {
+  id: string
+  asset_id: string
+  side: string
+  price: string
+  original_size: string
+  size_matched: string
+  status: string
+}
+
+interface Positions {
+  timestamp: string
+  kalshi: {
+    orders: KalshiOrder[]
+    total_cost_usd: number
+    balance_usd: number | null
+    error: string | null
+  }
+  polymarket: {
+    orders: PolyOrder[]
+    total_cost_usd: number
+    balance_usd: number | null
+    error: string | null
+  }
+}
 
 interface MarketData {
   timestamp: string
@@ -45,12 +82,15 @@ interface MarketData {
 
 export default function Dashboard() {
   const [data, setData] = useState<MarketData | null>(null)
+  const [positions, setPositions] = useState<Positions | null>(null)
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date())
 
+  const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
+
   const fetchData = async () => {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/arbitrage`)
+      const res = await fetch(`${API}/arbitrage`)
       const json = await res.json()
       setData(json)
       setLastUpdated(new Date())
@@ -60,9 +100,23 @@ export default function Dashboard() {
     }
   }
 
+  const fetchPositions = async () => {
+    try {
+      const res = await fetch(`${API}/positions`)
+      const json = await res.json()
+      setPositions(json)
+    } catch (err) {
+      console.error("Failed to fetch positions", err)
+    }
+  }
+
   useEffect(() => {
     fetchData()
-    const interval = setInterval(fetchData, 1000)
+    fetchPositions()
+    const interval = setInterval(() => {
+      fetchData()
+      fetchPositions()
+    }, 5000)
     return () => clearInterval(interval)
   }, [])
 
@@ -219,6 +273,104 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Open Positions */}
+      {positions && (
+        <Card>
+          <CardHeader>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Wallet className="h-5 w-5 text-slate-600" />
+                <CardTitle>Open Positions</CardTitle>
+              </div>
+              <div className="flex gap-4 text-sm text-muted-foreground">
+                {positions.kalshi.balance_usd !== null && (
+                  <span>Kalshi balance: <span className="font-mono font-medium text-slate-700">${positions.kalshi.balance_usd.toFixed(2)}</span></span>
+                )}
+                {positions.polymarket.balance_usd !== null && (
+                  <span>Poly balance: <span className="font-mono font-medium text-slate-700">${positions.polymarket.balance_usd.toFixed(2)}</span></span>
+                )}
+              </div>
+            </div>
+            <CardDescription>Live open orders on both platforms</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              {/* Kalshi Orders */}
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-semibold text-sm text-slate-700">Kalshi</h3>
+                  {positions.kalshi.orders.length > 0 && (
+                    <Badge variant="outline" className="text-xs">
+                      ${positions.kalshi.total_cost_usd.toFixed(2)} at risk
+                    </Badge>
+                  )}
+                </div>
+                {positions.kalshi.error && (
+                  <p className="text-xs text-red-500">{positions.kalshi.error}</p>
+                )}
+                {positions.kalshi.orders.length === 0 && !positions.kalshi.error ? (
+                  <p className="text-sm text-muted-foreground">No open orders</p>
+                ) : (
+                  <div className="space-y-2">
+                    {positions.kalshi.orders.map((o) => (
+                      <div key={o.order_id} className="bg-slate-50 rounded-md p-3 text-xs border">
+                        <div className="flex justify-between font-medium mb-1">
+                          <span className="font-mono truncate max-w-[60%]">{o.ticker}</span>
+                          <Badge className={o.side === "yes" ? "bg-green-600 text-xs" : "bg-red-600 text-xs"}>
+                            {o.side?.toUpperCase()}
+                          </Badge>
+                        </div>
+                        <div className="flex justify-between text-muted-foreground">
+                          <span>Price: {o.yes_price ?? o.no_price}¢</span>
+                          <span>{o.remaining_count}/{o.count} contracts remaining</span>
+                        </div>
+                        <div className="mt-1 text-muted-foreground">Status: {o.status}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Polymarket Orders */}
+              <div>
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-semibold text-sm text-slate-700">Polymarket</h3>
+                  {positions.polymarket.orders.length > 0 && (
+                    <Badge variant="outline" className="text-xs">
+                      ${positions.polymarket.total_cost_usd.toFixed(2)} at risk
+                    </Badge>
+                  )}
+                </div>
+                {positions.polymarket.error && (
+                  <p className="text-xs text-red-500">{positions.polymarket.error}</p>
+                )}
+                {positions.polymarket.orders.length === 0 && !positions.polymarket.error ? (
+                  <p className="text-sm text-muted-foreground">No open orders</p>
+                ) : (
+                  <div className="space-y-2">
+                    {positions.polymarket.orders.map((o) => (
+                      <div key={o.id} className="bg-slate-50 rounded-md p-3 text-xs border">
+                        <div className="flex justify-between font-medium mb-1">
+                          <span className="font-mono truncate max-w-[60%]">{o.asset_id?.slice(0, 16)}...</span>
+                          <Badge className={o.side === "BUY" ? "bg-green-600 text-xs" : "bg-red-600 text-xs"}>
+                            {o.side}
+                          </Badge>
+                        </div>
+                        <div className="flex justify-between text-muted-foreground">
+                          <span>Price: ${parseFloat(o.price).toFixed(3)}</span>
+                          <span>{o.size_matched}/{o.original_size} filled</span>
+                        </div>
+                        <div className="mt-1 text-muted-foreground">Status: {o.status}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Arbitrage Checks Table */}
       <Card>
