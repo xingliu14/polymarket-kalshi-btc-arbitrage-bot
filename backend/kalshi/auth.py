@@ -11,18 +11,16 @@ import os
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 
-KALSHI_API_KEY_ID = os.getenv("KALSHI_API_KEY_ID", "YOUR_API_KEY_ID")
-KALSHI_PRIVATE_KEY_PATH = os.getenv("KALSHI_PRIVATE_KEY_PATH", "path/to/private_key.pem")
-
 
 def load_private_key():
     """Load RSA private key from PEM file."""
+    key_path = os.getenv("KALSHI_PRIVATE_KEY_PATH", "path/to/private_key.pem")
     try:
-        with open(KALSHI_PRIVATE_KEY_PATH, "rb") as f:
+        with open(key_path, "rb") as f:
             return serialization.load_pem_private_key(f.read(), password=None)
     except FileNotFoundError:
         raise FileNotFoundError(
-            f"Private key file not found at {KALSHI_PRIVATE_KEY_PATH}. "
+            f"Private key file not found at {key_path}. "
             "Set KALSHI_PRIVATE_KEY_PATH environment variable."
         )
     except Exception as e:
@@ -39,6 +37,7 @@ def get_auth_headers(method: str, path: str) -> dict:
     Returns:
         dict with KALSHI-ACCESS-* headers
     """
+    api_key_id = os.getenv("KALSHI_API_KEY_ID", "YOUR_API_KEY_ID")
     timestamp_ms = str(int(time.time() * 1000))
     msg = (timestamp_ms + method.upper() + path).encode()
 
@@ -53,7 +52,7 @@ def get_auth_headers(method: str, path: str) -> dict:
     )
 
     return {
-        "KALSHI-ACCESS-KEY": KALSHI_API_KEY_ID,
+        "KALSHI-ACCESS-KEY": api_key_id,
         "KALSHI-ACCESS-TIMESTAMP": timestamp_ms,
         "KALSHI-ACCESS-SIGNATURE": base64.b64encode(signature).decode(),
         "Content-Type": "application/json",
