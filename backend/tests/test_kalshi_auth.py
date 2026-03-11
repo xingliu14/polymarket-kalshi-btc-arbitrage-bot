@@ -9,6 +9,7 @@ from kalshi.auth import get_auth_headers, load_private_key
 class TestKalshiAuth(unittest.TestCase):
     """Test Kalshi RSA-PSS authentication."""
 
+    @patch.dict("os.environ", {"KALSHI_API_KEY_ID": "test-key-id"})
     @patch("kalshi.auth.load_private_key")
     @patch("kalshi.auth.time.time")
     def test_get_auth_headers_returns_required_keys(self, mock_time, mock_load_key):
@@ -27,6 +28,7 @@ class TestKalshiAuth(unittest.TestCase):
         self.assertIn("Content-Type", headers)
         self.assertEqual(headers["Content-Type"], "application/json")
 
+    @patch.dict("os.environ", {"KALSHI_API_KEY_ID": "test-key-id"})
     @patch("kalshi.auth.load_private_key")
     @patch("kalshi.auth.time.time")
     def test_signature_is_base64(self, mock_time, mock_load_key):
@@ -50,6 +52,7 @@ class TestKalshiAuth(unittest.TestCase):
         with self.assertRaises(FileNotFoundError):
             load_private_key()
 
+    @patch.dict("os.environ", {"KALSHI_API_KEY_ID": "test-key-id"})
     @patch("kalshi.auth.load_private_key")
     @patch("kalshi.auth.time.time")
     def test_timestamp_included(self, mock_time, mock_load_key):

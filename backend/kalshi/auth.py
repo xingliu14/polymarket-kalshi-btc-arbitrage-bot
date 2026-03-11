@@ -8,13 +8,19 @@ Required environment variables (or hardcoded if testing):
 import time
 import base64
 import os
+from pathlib import Path
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 def load_private_key():
     """Load RSA private key from PEM file."""
     key_path = os.getenv("KALSHI_PRIVATE_KEY_PATH", "path/to/private_key.pem")
+    # Resolve relative paths against project root
+    if not os.path.isabs(key_path):
+        key_path = str(PROJECT_ROOT / key_path)
     try:
         with open(key_path, "rb") as f:
             return serialization.load_pem_private_key(f.read(), password=None)
@@ -37,7 +43,12 @@ def get_auth_headers(method: str, path: str) -> dict:
     Returns:
         dict with KALSHI-ACCESS-* headers
     """
-    api_key_id = os.getenv("KALSHI_API_KEY_ID", "YOUR_API_KEY_ID")
+    api_key_id = os.getenv("KALSHI_API_KEY_ID", "")
+    if not api_key_id or api_key_id in ("your_api_key_id", "YOUR_API_KEY_ID"):
+        raise ValueError(
+            "KALSHI_API_KEY_ID is not set. "
+            "Update your .env file with your real API key ID from the Kalshi dashboard."
+        )
     timestamp_ms = str(int(time.time() * 1000))
     msg = (timestamp_ms + method.upper() + path).encode()
 

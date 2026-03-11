@@ -8,9 +8,10 @@ import sys
 import json
 import traceback
 
-# Load .env
+# Load .env from project root
+from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 PASS = "\033[92mPASS\033[0m"
 FAIL = "\033[91mFAIL\033[0m"

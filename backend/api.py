@@ -1,5 +1,7 @@
+from pathlib import Path
 from dotenv import load_dotenv
-load_dotenv()
+
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,6 +11,10 @@ from kalshi.trader import get_open_orders as kalshi_get_open_orders, get_balance
 from polymarket.trader import get_open_orders as poly_get_open_orders, get_balance as poly_get_balance
 from arbitrage.engine import find_opportunities
 import datetime
+import json
+import os
+
+TRADE_LOG_FILE = os.getenv("TRADE_LOG_FILE", "trade_history.json")
 
 app = FastAPI()
 
@@ -108,6 +114,47 @@ def get_positions():
             "balance_usd": poly_balance_usdc,
             "balance_error": poly_balance_error,
             "error": poly_orders_result.get("error"),
+        },
+    }
+
+
+@app.get("/trades")
+def get_trades():
+    """Return trade history and P&L from the auto trader log."""
+    trades = []
+    if os.path.exists(TRADE_LOG_FILE):
+        try:
+            with open(TRADE_LOG_FILE, "r") as f:
+                trades = json.load(f)
+        except Exception:
+            pass
+
+    # Compute P&L summary
+    total_pnl = 0.0
+    wins = 0
+    losses = 0
+    for t in trades:
+        status = t.get("status", "")
+        opp = t.get("opportunity", {})
+        margin = opp.get("margin", 0)
+        if status in ("filled", "dry_run"):
+            total_pnl += margin
+            wins += 1
+        elif status == "partial_kalshi_only":
+            total_pnl -= opp.get("kalshi_cost", 0)
+            losses += 1
+        elif status == "partial_poly_only":
+            total_pnl -= opp.get("poly_cost", 0)
+            losses += 1
+
+    # Return most recent first, capped at 50
+    return {
+        "trades": list(reversed(trades[-50:])),
+        "pnl": {
+            "total": total_pnl,
+            "wins": wins,
+            "losses": losses,
+            "num_trades": wins + losses,
         },
     }
 

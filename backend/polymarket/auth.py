@@ -24,6 +24,15 @@ POLY_FUNDER_ADDRESS = os.getenv("POLY_FUNDER_ADDRESS", "")
 POLY_SIGNATURE_TYPE = int(os.getenv("POLY_SIGNATURE_TYPE", "0"))
 
 
+def _get_signer_address() -> str:
+    """Derive the wallet address from the private key (matches SDK behavior)."""
+    try:
+        from py_clob_client.signer import Signer
+        return Signer(POLY_PRIVATE_KEY, 137).address()
+    except Exception:
+        return POLY_FUNDER_ADDRESS
+
+
 def build_hmac_signature(secret: str, timestamp: str, method: str,
                          request_path: str, body: str = None) -> str:
     """Build HMAC-SHA256 signature for Polymarket L2 auth.
@@ -67,7 +76,7 @@ def get_l2_headers(method: str, request_path: str,
     )
 
     return {
-        "POLY_ADDRESS": POLY_FUNDER_ADDRESS,
+        "POLY_ADDRESS": _get_signer_address(),
         "POLY_SIGNATURE": signature,
         "POLY_TIMESTAMP": timestamp,
         "POLY_API_KEY": POLY_API_KEY,

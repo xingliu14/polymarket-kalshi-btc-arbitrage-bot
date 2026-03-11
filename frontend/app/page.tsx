@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
-import { AlertCircle, TrendingUp, Wallet } from "lucide-react"
+import { AlertCircle, TrendingUp, Wallet, Activity } from "lucide-react"
 
 interface KalshiOrder {
   order_id: string
@@ -43,6 +43,36 @@ interface Positions {
     balance_usd: number | null
     balance_error: string | null
     error: string | null
+  }
+}
+
+interface TradeRecord {
+  timestamp: string
+  status: string
+  opportunity: {
+    type: string
+    kalshi_strike: number
+    poly_leg: string
+    kalshi_leg: string
+    poly_cost: number
+    kalshi_cost: number
+    total_cost: number
+    margin: number
+    poly_fee: number
+    kalshi_fee: number
+  }
+  kalshi_order: { order_id: string; success: boolean } | null
+  poly_order: { order_id: string; success: boolean } | null
+  error?: string
+}
+
+interface TradesData {
+  trades: TradeRecord[]
+  pnl: {
+    total: number
+    wins: number
+    losses: number
+    num_trades: number
   }
 }
 
@@ -85,6 +115,7 @@ interface MarketData {
 export default function Dashboard() {
   const [data, setData] = useState<MarketData | null>(null)
   const [positions, setPositions] = useState<Positions | null>(null)
+  const [trades, setTrades] = useState<TradesData | null>(null)
   const [loading, setLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date())
 
@@ -112,14 +143,27 @@ export default function Dashboard() {
     }
   }
 
+  const fetchTrades = async () => {
+    try {
+      const res = await fetch(`${API}/trades`)
+      const json = await res.json()
+      setTrades(json)
+    } catch (err) {
+      console.error("Failed to fetch trades", err)
+    }
+  }
+
   useEffect(() => {
     fetchData()
     fetchPositions()
+    fetchTrades()
     const priceInterval = setInterval(fetchData, 1000)
     const positionsInterval = setInterval(fetchPositions, 10000)
+    const tradesInterval = setInterval(fetchTrades, 5000)
     return () => {
       clearInterval(priceInterval)
       clearInterval(positionsInterval)
+      clearInterval(tradesInterval)
     }
   }, [])
 
@@ -398,6 +442,105 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       )}
+
+      {/* Trade Activity */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Activity className="h-5 w-5 text-slate-600" />
+              <CardTitle>Trade Activity</CardTitle>
+            </div>
+            {trades && trades.pnl.num_trades > 0 && (
+              <div className="flex items-center gap-4">
+                <div className="text-xs text-muted-foreground">
+                  {trades.pnl.wins}W / {trades.pnl.losses}L
+                </div>
+                <Badge className={trades.pnl.total >= 0 ? "bg-green-600" : "bg-red-600"}>
+                  P&L: {trades.pnl.total >= 0 ? "+" : ""}${trades.pnl.total.toFixed(4)}
+                </Badge>
+              </div>
+            )}
+          </div>
+          <CardDescription>Orders placed by the auto trader</CardDescription>
+        </CardHeader>
+        <CardContent>
+          {!trades || trades.trades.length === 0 ? (
+            <p className="text-sm text-muted-foreground">No trades executed yet</p>
+          ) : (
+            <div className="space-y-3 max-h-[400px] overflow-y-auto pr-2">
+              {trades.trades.map((t, i) => {
+                const opp = t.opportunity
+                const isSuccess = t.status === "filled" || t.status === "dry_run"
+                const isFailed = t.status.startsWith("failed") || t.status.startsWith("rejected")
+                const isPartial = t.status.startsWith("partial_")
+                const statusColor = isSuccess
+                  ? "bg-green-600"
+                  : isPartial
+                  ? "bg-amber-500"
+                  : isFailed
+                  ? "bg-red-600"
+                  : "bg-slate-500"
+                const time = new Date(t.timestamp).toLocaleString()
+
+                return (
+                  <div key={i} className={`rounded-md p-4 border text-sm ${
+                    isSuccess ? "bg-green-50 border-green-200" :
+                    isPartial ? "bg-amber-50 border-amber-200" :
+                    isFailed ? "bg-red-50 border-red-200" :
+                    "bg-slate-50"
+                  }`}>
+                    <div className="flex justify-between items-start mb-2">
+                      <div className="flex items-center gap-2">
+                        <Badge className={`${statusColor} text-xs`}>
+                          {t.status.replace(/_/g, " ").toUpperCase()}
+                        </Badge>
+                        <span className="text-xs text-muted-foreground">{time}</span>
+                      </div>
+                      <span className={`font-mono font-bold ${
+                        isSuccess ? "text-green-700" : isPartial ? "text-amber-700" : "text-slate-600"
+                      }`}>
+                        {isSuccess ? "+" : isPartial ? "-" : ""}${
+                          isSuccess
+                            ? opp.margin.toFixed(4)
+                            : isPartial && t.status === "partial_kalshi_only"
+                            ? opp.kalshi_cost.toFixed(4)
+                            : isPartial
+                            ? opp.poly_cost.toFixed(4)
+                            : "0.0000"
+                        }
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs text-muted-foreground">
+                      <div>
+                        <span className="font-medium text-slate-700">Strategy: </span>
+                        {opp.type}
+                      </div>
+                      <div>
+                        <span className="font-medium text-slate-700">Strike: </span>
+                        ${opp.kalshi_strike?.toLocaleString()}
+                      </div>
+                      <div>
+                        <span className="font-medium text-slate-700">Poly: </span>
+                        Buy {opp.poly_leg} @ ${opp.poly_cost.toFixed(3)}
+                      </div>
+                      <div>
+                        <span className="font-medium text-slate-700">Kalshi: </span>
+                        Buy {opp.kalshi_leg} @ ${opp.kalshi_cost.toFixed(3)}
+                      </div>
+                    </div>
+                    {t.error && (
+                      <div className="mt-2 text-xs text-red-600">
+                        Error: {t.error}
+                      </div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Arbitrage Checks Table */}
       <Card>
