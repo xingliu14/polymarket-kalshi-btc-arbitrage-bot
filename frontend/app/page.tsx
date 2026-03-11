@@ -561,7 +561,7 @@ export default function Dashboard() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {data.checks.map((check, i) => {
+              {[...data.checks].sort((a, b) => a.total_cost - b.total_cost).map((check, i) => {
                 const isProfitable = check.total_cost < 1.00
                 const percentCost = Math.min(check.total_cost * 100, 100)
 
