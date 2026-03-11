@@ -161,43 +161,104 @@ def get_order_status(order_id: str) -> dict:
         return {"success": False, "data": None, "error": str(e)}
 
 
+POSITIONS_PATH = "/trade-api/v2/portfolio/positions"
+
+
+def get_market_positions() -> dict:
+    """Fetch all held market positions (filled contracts).
+
+    Returns:
+        dict with keys: success, positions (list), error
+    """
+    try:
+        all_positions = []
+        cursor = None
+
+        while True:
+            params = {"limit": 200}
+            if cursor:
+                params["cursor"] = cursor
+
+            headers = get_auth_headers("GET", POSITIONS_PATH)
+            resp = requests.get(
+                BASE_URL + POSITIONS_PATH,
+                params=params,
+                headers=headers,
+                timeout=10,
+            )
+
+            if resp.status_code != 200:
+                return {
+                    "success": False,
+                    "positions": [],
+                    "error": f"HTTP {resp.status_code}: {resp.text[:200]}",
+                }
+
+            data = resp.json()
+            page = data.get("market_positions", [])
+            all_positions.extend(p for p in page if p.get("position", 0) != 0)
+
+            cursor = data.get("cursor")
+            if not cursor or not page:
+                break
+
+        return {"success": True, "positions": all_positions, "error": None}
+    except Exception as e:
+        return {"success": False, "positions": [], "error": str(e)}
+
+
 def get_open_orders() -> dict:
-    """Fetch all open/resting orders.
+    """Fetch all open/resting orders, handling cursor-based pagination.
 
     Returns:
         dict with keys: success, orders (list), total_cost_cents (int), error
     """
     try:
-        headers = get_auth_headers("GET", ORDERS_PATH)
-        resp = requests.get(
-            BASE_URL + ORDERS_PATH,
-            params={"status": "resting"},
-            headers=headers,
-            timeout=10,
-        )
+        all_orders = []
+        cursor = None
 
-        if resp.status_code == 200:
+        while True:
+            params = {"status": "resting", "limit": 200}
+            if cursor:
+                params["cursor"] = cursor
+
+            headers = get_auth_headers("GET", ORDERS_PATH)
+            resp = requests.get(
+                BASE_URL + ORDERS_PATH,
+                params=params,
+                headers=headers,
+                timeout=10,
+            )
+
+            if resp.status_code != 200:
+                return {
+                    "success": False,
+                    "orders": [],
+                    "total_cost_cents": 0,
+                    "error": f"HTTP {resp.status_code}: {resp.text[:200]}",
+                }
+
             data = resp.json()
-            orders = data.get("orders", [])
-            # Sum up cost of all open orders: price * remaining_count
-            total_cost_cents = 0
-            for o in orders:
-                price = o.get("yes_price", 0)
-                remaining = o.get("remaining_count", 0)
-                total_cost_cents += price * remaining
-            return {
-                "success": True,
-                "orders": orders,
-                "total_cost_cents": total_cost_cents,
-                "error": None,
-            }
-        else:
-            return {
-                "success": False,
-                "orders": [],
-                "total_cost_cents": 0,
-                "error": f"HTTP {resp.status_code}: {resp.text[:200]}",
-            }
+            page_orders = data.get("orders", [])
+            all_orders.extend(page_orders)
+
+            cursor = data.get("cursor")
+            if not cursor or not page_orders:
+                break
+
+        # Sum up cost of all open orders: price * remaining_count
+        total_cost_cents = 0
+        for o in all_orders:
+            price = o.get("yes_price", 0)
+            remaining = o.get("remaining_count", 0)
+            total_cost_cents += price * remaining
+
+        return {
+            "success": True,
+            "orders": all_orders,
+            "total_cost_cents": total_cost_cents,
+            "error": None,
+        }
     except Exception as e:
         return {"success": False, "orders": [], "total_cost_cents": 0, "error": str(e)}
 

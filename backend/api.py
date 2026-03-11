@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from polymarket.markets import fetch_polymarket_data_struct
 from kalshi.markets import fetch_kalshi_data_struct
-from kalshi.trader import get_open_orders as kalshi_get_open_orders, get_balance as kalshi_get_balance
+from kalshi.trader import get_open_orders as kalshi_get_open_orders, get_balance as kalshi_get_balance, get_market_positions as kalshi_get_market_positions
 from polymarket.trader import get_open_orders as poly_get_open_orders, get_balance as poly_get_balance
 from arbitrage.engine import find_opportunities
 import datetime
@@ -64,6 +64,7 @@ def get_arbitrage_data():
 def get_positions():
     """Fetch open orders and balances from both platforms."""
     kalshi_orders_result = {"orders": [], "total_cost_cents": 0, "error": None}
+    kalshi_positions_result = {"positions": [], "error": None}
     poly_orders_result = {"orders": [], "total_cost_usdc": 0.0, "error": None}
     kalshi_balance_cents = None
     poly_balance_usdc = None
@@ -74,6 +75,11 @@ def get_positions():
         kalshi_orders_result = kalshi_get_open_orders()
     except Exception as e:
         kalshi_orders_result["error"] = str(e)
+
+    try:
+        kalshi_positions_result = kalshi_get_market_positions()
+    except Exception as e:
+        kalshi_positions_result["error"] = str(e)
 
     try:
         poly_orders_result = poly_get_open_orders()
@@ -103,10 +109,12 @@ def get_positions():
         "timestamp": datetime.datetime.now().isoformat(),
         "kalshi": {
             "orders": kalshi_orders_result.get("orders", []),
+            "positions": kalshi_positions_result.get("positions", []),
             "total_cost_usd": kalshi_orders_result.get("total_cost_cents", 0) / 100,
             "balance_usd": kalshi_balance_cents / 100 if kalshi_balance_cents is not None else None,
             "balance_error": kalshi_balance_error,
             "error": kalshi_orders_result.get("error"),
+            "positions_error": kalshi_positions_result.get("error"),
         },
         "polymarket": {
             "orders": poly_orders_result.get("orders", []),
@@ -157,6 +165,24 @@ def get_trades():
             "num_trades": wins + losses,
         },
     }
+
+
+@app.get("/debug/kalshi-orders")
+def debug_kalshi_orders():
+    """Return raw Kalshi orders response for debugging (no status filter)."""
+    from kalshi.auth import get_auth_headers
+    import requests as req
+    BASE_URL = "https://api.elections.kalshi.com"
+    ORDERS_PATH = "/trade-api/v2/portfolio/orders"
+    try:
+        headers = get_auth_headers("GET", ORDERS_PATH)
+        resp = req.get(BASE_URL + ORDERS_PATH, params={"limit": 50}, headers=headers, timeout=10)
+        return {
+            "status_code": resp.status_code,
+            "raw": resp.json() if resp.headers.get("content-type", "").startswith("application/json") else resp.text,
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 
 if __name__ == "__main__":

@@ -18,6 +18,14 @@ interface KalshiOrder {
   status: string
 }
 
+interface KalshiPosition {
+  ticker: string
+  position: number
+  market_exposure_dollars: string
+  realized_pnl_dollars: string
+  fees_paid_dollars: string
+}
+
 interface PolyOrder {
   id: string
   asset_id: string
@@ -32,10 +40,12 @@ interface Positions {
   timestamp: string
   kalshi: {
     orders: KalshiOrder[]
+    positions: KalshiPosition[]
     total_cost_usd: number
     balance_usd: number | null
     balance_error: string | null
     error: string | null
+    positions_error: string | null
   }
   polymarket: {
     orders: PolyOrder[]
@@ -380,10 +390,37 @@ export default function Dashboard() {
                 {positions.kalshi.error && (
                   <p className="text-xs text-red-500">{positions.kalshi.error}</p>
                 )}
-                {positions.kalshi.orders.length === 0 && !positions.kalshi.error ? (
-                  <p className="text-sm text-muted-foreground">No open orders</p>
-                ) : (
+                {positions.kalshi.positions_error && (
+                  <p className="text-xs text-red-500">{positions.kalshi.positions_error}</p>
+                )}
+                {/* Held positions */}
+                {(positions.kalshi.positions ?? []).length > 0 && (
+                  <div className="space-y-2 mb-3">
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Held Positions</p>
+                    {(positions.kalshi.positions ?? []).map((p) => (
+                      <div key={p.ticker} className="bg-blue-50 rounded-md p-3 text-xs border border-blue-200">
+                        <div className="flex justify-between font-medium mb-1">
+                          <span className="font-mono truncate max-w-[70%]">{p.ticker}</span>
+                          <Badge className="bg-blue-600 text-xs">{p.position > 0 ? "LONG" : "SHORT"}</Badge>
+                        </div>
+                        <div className="flex justify-between text-muted-foreground">
+                          <span>{Math.abs(p.position)} contracts</span>
+                          <span>Exposure: ${p.market_exposure_dollars}</span>
+                        </div>
+                        <div className="flex justify-between mt-1 text-muted-foreground">
+                          <span>P&L: ${p.realized_pnl_dollars}</span>
+                          <span>Fees: ${p.fees_paid_dollars}</span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {/* Resting (unfilled) orders */}
+                {positions.kalshi.orders.length === 0 && (positions.kalshi.positions ?? []).length === 0 && !positions.kalshi.error ? (
+                  <p className="text-sm text-muted-foreground">No open orders or positions</p>
+                ) : positions.kalshi.orders.length > 0 ? (
                   <div className="space-y-2">
+                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Resting Orders</p>
                     {positions.kalshi.orders.map((o) => (
                       <div key={o.order_id} className="bg-slate-50 rounded-md p-3 text-xs border">
                         <div className="flex justify-between font-medium mb-1">
@@ -400,7 +437,7 @@ export default function Dashboard() {
                       </div>
                     ))}
                   </div>
-                )}
+                ) : null}
               </div>
 
               {/* Polymarket Orders */}
